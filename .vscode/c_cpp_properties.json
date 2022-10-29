@@ -1,0 +1,25 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/tina/Documents/blaser_ws/devel/include/**",
+        "/opt/ros/noetic/include/**",
+        "/home/tina/Documents/blaser_ws/src/blaser-pcl-core/include/**",
+        "/home/tina/Documents/blaser_ws/src/blaser_mapping/blaser_ros/include/**",
+        "/home/tina/Documents/blaser_ws/src/blaser_mapping/camera_model/include/**",
+        "/home/tina/Documents/blaser_ws/src/blaser_mapping/pipe_blaser_ros/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}

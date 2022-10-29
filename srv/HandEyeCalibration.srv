@@ -1,0 +1,6 @@
+geometry_msgs/Point[] points
+geometry_msgs/Pose[] T_b_e
+int32 num
+int32 k
+---
+geometry_msgs/Pose T_e_c
