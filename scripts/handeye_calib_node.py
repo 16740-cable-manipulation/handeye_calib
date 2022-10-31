@@ -21,6 +21,7 @@ from handeye_calib.srv import HandEyeCalibration
 import sys, os
 import numpy as np
 import cv2
+from cv_bridge import CvBridge
 import yaml
 
 
@@ -28,8 +29,90 @@ def toPointMsg(pt):
     return Point(pt[0], pt[1], pt[2])
 
 
+def pose2PoseMsg(pose):
+    return
+
+
+class Realsense:
+    def __init__(self):
+        self.seq = 0
+        self.time_offset = None
+        self.fnumber_captured = False
+        self.pipeline = rs.pipeline()
+        self.cfg = rs.config()
+        self.cfg.enable_stream(rs.stream.depth)
+        self.cfg.enable_stream(rs.stream.color)
+
+        align_to = rs.stream.color
+        self.align = rs.align(align_to)
+        self.pc = rs.pointcloud()
+        self.frame_buffer = []
+        self.use_trigger = True
+        self.bridge = CvBridge()
+        self.K = None
+        self.D = None
+
+        self.setSyncMode(_use_trigger=False)
+        self.start()
+
+    def start(self):
+        profile = self.pipeline.start(self.cfg)
+        intr = (
+            profile.get_stream(rs.stream.color)
+            .as_video_stream_profile()
+            .get_intrinsics()
+        )
+        print(intr)
+        self.K = np.array(
+            [[intr.fx, 0.0, intr.ppx], [0.0, intr.fy, intr.ppy], [0.0, 0.0, 1]]
+        )
+        self.D = np.array(intr.coeffs)
+        print("Realsense ready!")
+
+    def setSyncMode(self, _use_trigger=True):
+        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
+        r = self.cfg.resolve(pipeline_wrapper)
+        device = r.get_device()
+        sensor = device.query_sensors()[0]
+        # set sensor sync mode
+        self.use_trigger = _use_trigger
+        if self.use_trigger:
+            sensor.set_option(rs.option.inter_cam_sync_mode, 1)
+        else:
+            sensor.set_option(rs.option.inter_cam_sync_mode, 0)
+
+    def getFrameSet(self):
+        """Get rs frames and return color image"""
+        frameset = self.pipeline.wait_for_frames()
+        rgb = self.getPointCloudMsg(frameset)
+        return rgb
+
+    def getPointCloudMsg(self, frameset):
+        """Construct PointCloud2 msg given rs frameset and ros timestamp"""
+        if self.use_trigger:
+            fnumber = frameset.get_frame_number()
+            # make sure we only publish one frame corresponding to this fnumber
+            # or if fnumber != seq+1, the frame might be corrupted
+            if fnumber == self.seq or fnumber != self.seq + 1:
+                return
+        # Align the depth frame to color frame
+        aligned_frames = self.align.process(frameset)
+        aligned_depth_frame = aligned_frames.get_depth_frame()
+        color_frame = aligned_frames.get_color_frame()
+        # Validate that both frames are valid
+        if not aligned_depth_frame or not color_frame:
+            return
+
+        color_image = np.asanyarray(color_frame.get_data())
+        return color_image
+
+    def close(self):
+        print("Closing Realsense")
+        self.pipeline.stop()
+
+
 class HandEyeCalibrationNode:
-    def __init__(self, base_folder, checker_dim, checker_size):
+    def __init__(self, checker_center, checker_dim, checker_size):
         # termination criteria
         self.criteria = (
             cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
@@ -48,7 +131,6 @@ class HandEyeCalibrationNode:
 
         self.num_valid_frames = 0
 
-        self.cal_path = base_folder
         self.checker_row = checker_dim[0]
         self.check_col = checker_dim[1]
         self.checker_dim = checker_dim
@@ -61,8 +143,35 @@ class HandEyeCalibrationNode:
             * self.checker_size
         )
 
-        self.ee_poses = []  # a list of poses the ee should go to
+        self.ee_poses = self.generate_poses(checker_center)
         self.T_e_c = None
+
+        self.realsense = Realsense()
+
+        self.fa = FrankaArm()
+        self.fa.reset_joints()
+        self.fa.open_gripper()
+
+    def generate_poses(self, checker_center):
+        # a list of poses the ee should go to
+        return []
+
+    def command_pose(self, _rotation, _translation):
+        """
+        Command ee to go to a pose and take an picture.
+
+        ``_rotation``: np array, rotation matrix, size 3x3
+        ``_translation``: np array, translation vector size 3
+        """
+        des_pose = RigidTransform(
+            rotation=_rotation,
+            translation=_translation,
+            from_frame="franka_tool",
+            to_frame="world",
+        )
+        self.fa.goto_pose(des_pose, use_impedance=False)
+        img = self.realsense.getFrameSet()
+        return img
 
     def process_image(self, img, pose_id, T_b_e):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -82,7 +191,7 @@ class HandEyeCalibrationNode:
             # cv2.imshow(images_left[i], img_l)
             # pnp
             success, rvec, tvec = cv2.solvePnP(
-                self.objp, corners, self.K, self.D, flags=0
+                self.objp, corners, self.realsense.K, self.realsense.D, flags=0
             )
             if success is True:
                 # transform objp to camera frame
@@ -108,7 +217,7 @@ class HandEyeCalibrationNode:
                 self.check_col * self.checker_row,
                 self.num_valid_frames,
             )
-            return resp.T_e_c
+            self.T_e_c = resp.T_e_c
         except rospy.ServiceException as e:
             print("Service call failed: %s" % e)
 
@@ -129,21 +238,33 @@ class HandEyeCalibrationNode:
             with open("test.yaml", "w") as f:
                 yaml.dump(calib_result, f)
 
+    def run(self):
+        for pose_id, pose in enumerate(self.ee_poses):
+            img = self.command_pose(pose["R"], pose["t"])
+            if img is not None:
+                T_b_e = pose2PoseMsg(pose)
+                self.process_image(img, pose_id, T_b_e)
+        self.request_calibration()
+        self.write_result()
+
 
 if __name__ == "__main__":
-    if len(sys.argv) < 6:
+    if len(sys.argv) < 7:
         print(
-            "Usage: python stereo_calibration img_base_folder trial_folder"
-            " checker_row checker_col checker_size_m"
+            "Usage: python3 handeye_calib_node checker_x checker_y checker_z "
+            "checker_row checker_col checker_size_m"
         )
         exit(0)
 
-    base_folder = sys.argv[1]
-    trial_folder = sys.argv[2]
-    checker_row = int(sys.argv[3])
-    checker_col = int(sys.argv[4])
-    checker_size = float(sys.argv[5])
+    checker_x = float(sys.argv[1])
+    checker_y = float(sys.argv[2])
+    checker_z = float(sys.argv[3])
+    checker_row = int(sys.argv[4])
+    checker_col = int(sys.argv[5])
+    checker_size = float(sys.argv[6])
 
     cal_data = HandEyeCalibrationNode(
-        base_folder, (checker_row, checker_col), checker_size
+        (checker_x, checker_y, checker_z),
+        (checker_row, checker_col),
+        checker_size,
     )
