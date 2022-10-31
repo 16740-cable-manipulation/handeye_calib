@@ -8,14 +8,13 @@
 6. Dump the result
 """
 
-import imp
 import numpy as np
 from autolab_core import RigidTransform
 from frankapy import FrankaArm
 import pyrealsense2 as rs
 from geometry_msgs.msg import Point, Pose
 import rospy
-
+from tf.transformations import quaternion_from_matrix
 from handeye_calib.srv import HandEyeCalibration
 
 import sys, os
@@ -30,7 +29,16 @@ def toPointMsg(pt):
 
 
 def pose2PoseMsg(pose):
-    return
+    res = Pose()
+    res.position.x = pose["t"][0]
+    res.position.y = pose["t"][1]
+    res.position.z = pose["t"][2]
+    q = quaternion_from_matrix(pose["R"])
+    res.orientation.x = q[0]
+    res.orientation.y = q[1]
+    res.orientation.z = q[2]
+    res.orientation.w = q[3]
+    return res
 
 
 class Realsense:
@@ -152,9 +160,40 @@ class HandEyeCalibrationNode:
         self.fa.reset_joints()
         self.fa.open_gripper()
 
+    def compute_rotation(checker_center, trans):
+        vz = checker_center - trans
+        vz = vz / np.linalg.norm(vz)
+        vx = np.array([1.0, 0.0, 0.0])
+        vy = np.cross(vz, vx)
+        vy = vy / np.linalg.norm(vy)
+        R = np.vstack((vx, vy, vz)).T
+        return R
+
     def generate_poses(self, checker_center):
         # a list of poses the ee should go to
-        return []
+        dx = 0.3
+        dy = 0.3
+        z0 = 0.3
+        dz = 0.4
+        nx = 10
+        ny = 10
+        nz = 10
+        cx, cy, cz = checker_center
+        x_ = np.linspace(cx - dx, cx + dx, nx)
+        y_ = np.linspace(cy - dy, cy + dy, ny)
+        z_ = np.linspace(z0, z0 + dz, nz)
+
+        x, y, z = np.meshgrid(x_, y_, z_, indexing="ij")
+        # at each (x,y,z) point, compute the rotation
+        translations = np.vstack((x.flatten(), y.flatten(), z.flatten())).T
+        rotations = [
+            {"R": rotations[i], "t": translations[i]}
+            for i in range(len(translations))
+        ]
+        return [
+            {"R": rotations[i], "t": translations[i]}
+            for i in range(len(translations))
+        ]
 
     def command_pose(self, _rotation, _translation):
         """
