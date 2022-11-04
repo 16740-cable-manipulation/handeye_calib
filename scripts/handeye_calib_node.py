@@ -14,8 +14,9 @@ from frankapy import FrankaArm
 import pyrealsense2 as rs
 from geometry_msgs.msg import Point, Pose
 import rospy
-from tf.transformations import quaternion_from_matrix
-from handeye_calib.srv import HandEyeCalibration
+from scipy.spatial.transform import Rotation as R
+#from handeye_calib.srv import HandEyeCalibration
+import time
 
 import sys, os
 import numpy as np
@@ -33,7 +34,8 @@ def pose2PoseMsg(pose):
     res.position.x = pose["t"][0]
     res.position.y = pose["t"][1]
     res.position.z = pose["t"][2]
-    q = quaternion_from_matrix(pose["R"])
+    rot = R.from_matrix(pose["R"])
+    q = rot.as_quat()
     res.orientation.x = q[0]
     res.orientation.y = q[1]
     res.orientation.z = q[2]
@@ -120,7 +122,8 @@ class Realsense:
 
 
 class HandEyeCalibrationNode:
-    def __init__(self, checker_center, checker_dim, checker_size):
+    def __init__(self, checker_center, checker_dim, checker_size, use_rs=False):
+        self.use_rs = use_rs
         # termination criteria
         self.criteria = (
             cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
@@ -154,41 +157,48 @@ class HandEyeCalibrationNode:
         self.ee_poses = self.generate_poses(checker_center)
         self.T_e_c = None
 
-        self.realsense = Realsense()
+        if use_rs is True:
+            self.realsense = Realsense()
 
         self.fa = FrankaArm()
         self.fa.reset_joints()
         self.fa.open_gripper()
+        time.sleep(4)
+        T_ee_world = self.fa.get_pose()
+        print("Translation: {}".format(T_ee_world.translation))
+        print("Rotationn: {}".format(T_ee_world.quaternion))
 
-    def compute_rotation(checker_center, trans):
+    def compute_rotation(self, checker_center, trans):
         vz = checker_center - trans
         vz = vz / np.linalg.norm(vz)
         vx = np.array([1.0, 0.0, 0.0])
         vy = np.cross(vz, vx)
         vy = vy / np.linalg.norm(vy)
-        R = np.vstack((vx, vy, vz)).T
-        return R
+        Rot = np.vstack((vx, vy, vz)).T
+        rot = R.from_matrix(Rot)
+        return rot.as_matrix()
 
     def generate_poses(self, checker_center):
         # a list of poses the ee should go to
-        dx = 0.3
-        dy = 0.3
-        z0 = 0.3
-        dz = 0.4
-        nx = 10
-        ny = 10
-        nz = 10
+        dx1 = 0.15
+        dx2 = 0.15
+        dy1 = 0.2
+        dy2 = 0.2
+        z0 = 0.25
+        dz = 0.2
+        nx = 5
+        ny = 5
+        nz = 5
         cx, cy, cz = checker_center
-        x_ = np.linspace(cx - dx, cx + dx, nx)
-        y_ = np.linspace(cy - dy, cy + dy, ny)
+        x_ = np.linspace(cx - dx1, cx + dx2, nx)
+        y_ = np.linspace(cy - dy1, cy + dy2, ny)
         z_ = np.linspace(z0, z0 + dz, nz)
 
         x, y, z = np.meshgrid(x_, y_, z_, indexing="ij")
         # at each (x,y,z) point, compute the rotation
         translations = np.vstack((x.flatten(), y.flatten(), z.flatten())).T
         rotations = [
-            {"R": rotations[i], "t": translations[i]}
-            for i in range(len(translations))
+            self.compute_rotation(np.array([cx, cy, cz]), trans) for trans in translations
         ]
         return [
             {"R": rotations[i], "t": translations[i]}
@@ -209,7 +219,9 @@ class HandEyeCalibrationNode:
             to_frame="world",
         )
         self.fa.goto_pose(des_pose, use_impedance=False)
-        img = self.realsense.getFrameSet()
+        img = None
+        if self.use_rs:
+            img = self.realsense.getFrameSet()
         return img
 
     def process_image(self, img, pose_id, T_b_e):
@@ -235,7 +247,7 @@ class HandEyeCalibrationNode:
             if success is True:
                 # transform objp to camera frame
                 T_w_c = 0
-                pc = (T_w_c.T @ self.objp.T).T
+                pc = np.matmul(T_w_c.T, self.objp.T).T
                 for i in pc.shape[0]:
                     self.pc.append(toPointMsg(pc[i, :]))
                 self.T_b_e.append(T_b_e)  # pose msg
@@ -286,6 +298,15 @@ class HandEyeCalibrationNode:
         self.request_calibration()
         self.write_result()
 
+    def run_pose_only(self):
+        for pose_id, pose in enumerate(self.ee_poses):
+            print(pose_id)
+            print(pose)
+            img = self.command_pose(pose["R"], pose["t"])
+            time.sleep(4)
+            if img is not None:
+                T_b_e = pose2PoseMsg(pose)
+                self.process_image(img, pose_id, T_b_e)
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
@@ -307,3 +328,5 @@ if __name__ == "__main__":
         (checker_row, checker_col),
         checker_size,
     )
+    #quit()
+    cal_data.run_pose_only()
