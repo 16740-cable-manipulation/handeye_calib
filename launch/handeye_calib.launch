@@ -1,0 +1,5 @@
+<launch>
+    <node name="calibrator" pkg="handeye_calib" type="calibrate" output="screen"/>
+    <node name="handeye_calib_node" pkg="handeye_calib" type="handeye_calib_node.py" output="screen"/>
+
+</launch>

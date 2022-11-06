@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """handeye_calib_node
 
 1. Read in params
@@ -15,7 +16,8 @@ import pyrealsense2 as rs
 from geometry_msgs.msg import Point, Pose
 import rospy
 from scipy.spatial.transform import Rotation as R
-#from handeye_calib.srv import HandEyeCalibration
+
+# from handeye_calib.srv import HandEyeCalibration
 import time
 
 import sys, os
@@ -30,12 +32,14 @@ def toPointMsg(pt):
 
 
 def pose2PoseMsg(pose):
+    """``pose``: {"R": quat (xyzw), "t": trans}"""
     res = Pose()
     res.position.x = pose["t"][0]
     res.position.y = pose["t"][1]
     res.position.z = pose["t"][2]
-    rot = R.from_matrix(pose["R"])
-    q = rot.as_quat()
+    # rot = R.from_matrix(pose["R"])
+    # q = rot.as_quat()
+    q = pose["R"]
     res.orientation.x = q[0]
     res.orientation.y = q[1]
     res.orientation.z = q[2]
@@ -198,7 +202,8 @@ class HandEyeCalibrationNode:
         # at each (x,y,z) point, compute the rotation
         translations = np.vstack((x.flatten(), y.flatten(), z.flatten())).T
         rotations = [
-            self.compute_rotation(np.array([cx, cy, cz]), trans) for trans in translations
+            self.compute_rotation(np.array([cx, cy, cz]), trans)
+            for trans in translations
         ]
         return [
             {"R": rotations[i], "t": translations[i]}
@@ -219,10 +224,15 @@ class HandEyeCalibrationNode:
             to_frame="world",
         )
         self.fa.goto_pose(des_pose, use_impedance=False)
+        time.sleep(4)
         img = None
+        T_ee_world = self.fa.get_pose()
+        trans_actual = T_ee_world.translation
+        rot_actual = T_ee_world.quaternion  # xyzw
+        pose_actual = {"R": rot_actual, "t": trans_actual}
         if self.use_rs:
             img = self.realsense.getFrameSet()
-        return img
+        return img, pose_actual
 
     def process_image(self, img, pose_id, T_b_e):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -291,9 +301,9 @@ class HandEyeCalibrationNode:
 
     def run(self):
         for pose_id, pose in enumerate(self.ee_poses):
-            img = self.command_pose(pose["R"], pose["t"])
+            img, pose_actual = self.command_pose(pose["R"], pose["t"])
             if img is not None:
-                T_b_e = pose2PoseMsg(pose)
+                T_b_e = pose2PoseMsg(pose_actual)
                 self.process_image(img, pose_id, T_b_e)
         self.request_calibration()
         self.write_result()
@@ -302,11 +312,11 @@ class HandEyeCalibrationNode:
         for pose_id, pose in enumerate(self.ee_poses):
             print(pose_id)
             print(pose)
-            img = self.command_pose(pose["R"], pose["t"])
-            time.sleep(4)
+            img, pose_actual = self.command_pose(pose["R"], pose["t"])
             if img is not None:
-                T_b_e = pose2PoseMsg(pose)
+                T_b_e = pose2PoseMsg(pose_actual)
                 self.process_image(img, pose_id, T_b_e)
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
@@ -328,5 +338,5 @@ if __name__ == "__main__":
         (checker_row, checker_col),
         checker_size,
     )
-    #quit()
+    # quit()
     cal_data.run_pose_only()
