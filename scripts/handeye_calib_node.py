@@ -368,7 +368,7 @@ if __name__ == "__main__":
     checker_z = 0.0
     checker_row = 7
     checker_col = 10
-    checker_size = 0.2
+    checker_size = 0.02
 
     cal_data = HandEyeCalibrationNode(
         (checker_x, checker_y, checker_z),
