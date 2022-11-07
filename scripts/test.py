@@ -1,4 +1,5 @@
 import numpy as np
+import yaml
 
 
 def compute_rotation(checker_center, trans):
@@ -35,3 +36,21 @@ a = [
 ]
 print(a[2])
 
+print(translations[1].shape)
+
+calib_result = {
+    "rot_e_c": [
+        0.004426600695610158,
+        -0.008869680818557667,
+        0.6362892942443096,
+        0.7713868471775603,
+    ],
+    "trans_e_c": [
+        0.26176520641360856,
+        -0.04645319990478098,
+        -0.7189890894707276,
+    ],
+}
+
+with open("../test.yaml", "w") as f:
+    yaml.dump(calib_result, f)

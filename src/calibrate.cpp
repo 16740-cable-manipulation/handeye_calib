@@ -31,7 +31,7 @@ bool Calibrator::
         ROS_ERROR("[calibrator] Incorrect point number");
         return false;
     }
-    double pose[7] = {0, 0, 0, 0, 0, 0, 1};
+    double pose[7] = {0.045, -0.04, 0.05, 0, 0, 0.7071068, 0.7071068};
     ceres::Problem problem;
     ceres::LossFunction *loss_function;
     ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();

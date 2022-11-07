@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/student/Prog/iamEnv/bin/python
 """handeye_calib_node
 
 1. Read in params
@@ -17,7 +17,7 @@ from geometry_msgs.msg import Point, Pose
 import rospy
 from scipy.spatial.transform import Rotation as R
 
-# from handeye_calib.srv import HandEyeCalibration
+from handeye_calib.srv import HandEyeCalibration
 import time
 
 import sys, os
@@ -25,6 +25,10 @@ import numpy as np
 import cv2
 from cv_bridge import CvBridge
 import yaml
+
+R_e_c_guess = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+t_e_c_guess = np.array([0.045, -0.04, 0.05])
+t_c_e_guess = -t_e_c_guess
 
 
 def toPointMsg(pt):
@@ -61,12 +65,12 @@ class Realsense:
         self.align = rs.align(align_to)
         self.pc = rs.pointcloud()
         self.frame_buffer = []
-        self.use_trigger = True
+        self.use_trigger = False
         self.bridge = CvBridge()
         self.K = None
         self.D = None
 
-        self.setSyncMode(_use_trigger=False)
+        self.setSyncMode(_use_trigger=self.use_trigger)
         self.start()
 
     def start(self):
@@ -118,6 +122,7 @@ class Realsense:
             return
 
         color_image = np.asanyarray(color_frame.get_data())
+        color_image = cv2.cvtColor(color_image, cv2.COLOR_RGB2BGR)
         return color_image
 
     def close(self):
@@ -158,7 +163,7 @@ class HandEyeCalibrationNode:
             * self.checker_size
         )
 
-        self.ee_poses = self.generate_poses(checker_center)
+        self.ee_poses = self.generate_poses(checker_center)[::2]
         self.T_e_c = None
 
         if use_rs is True:
@@ -184,12 +189,12 @@ class HandEyeCalibrationNode:
 
     def generate_poses(self, checker_center):
         # a list of poses the ee should go to
-        dx1 = 0.15
-        dx2 = 0.15
+        dx1 = 0.10
+        dx2 = 0.10
         dy1 = 0.2
         dy2 = 0.2
         z0 = 0.25
-        dz = 0.2
+        dz = 0.35
         nx = 5
         ny = 5
         nz = 5
@@ -204,6 +209,11 @@ class HandEyeCalibrationNode:
         rotations = [
             self.compute_rotation(np.array([cx, cy, cz]), trans)
             for trans in translations
+        ]
+        translations = [
+            np.dot(rotations[i], t_c_e_guess.reshape((-1, 1)))
+            + translations[i].reshape((-1, 1))
+            for i in range(len(rotations))
         ]
         return [
             {"R": rotations[i], "t": translations[i]}
@@ -256,9 +266,16 @@ class HandEyeCalibrationNode:
             )
             if success is True:
                 # transform objp to camera frame
-                T_w_c = 0
-                pc = np.matmul(T_w_c.T, self.objp.T).T
-                for i in pc.shape[0]:
+                T_c_w = np.eye(4)
+                rmat, _ = cv2.Rodrigues(rvec)
+                T_c_w[:3, :3] = rmat
+                T_c_w[:3, 3] = tvec.flatten()
+                objp_homo = np.hstack(
+                    (self.objp, np.ones((self.objp.shape[0], 1)))
+                )
+                pc = np.matmul(T_c_w, objp_homo.T).T
+                pc = pc[:, :3]
+                for i in range(pc.shape[0]):
                     self.pc.append(toPointMsg(pc[i, :]))
                 self.T_b_e.append(T_b_e)  # pose msg
                 self.num_valid_frames += 1
@@ -266,12 +283,17 @@ class HandEyeCalibrationNode:
             print("pose #", pose_id, " invalid")
         # visualize
         cv2.imshow("image", vis)
-        cv2.waitKey(300)
+        cv2.waitKey(2000)
 
     def request_calibration(self):
+        if len(self.T_b_e) < 2:
+            RuntimeError("Not enough poses!")
+            quit(1)
         rospy.wait_for_service("/calibrate")
         try:
+            print("Waiting for service")
             calib_client = rospy.ServiceProxy("/calibrate", HandEyeCalibration)
+            print("Got service.")
             resp = calib_client(
                 self.pc,
                 self.T_b_e,
@@ -296,21 +318,27 @@ class HandEyeCalibrationNode:
                 self.T_e_c.position.z,
             ]
             calib_result = {"rot_e_c": rot, "trans_e_c": trans}
+            print("calib result: ")
+            print(calib_result)
             with open("test.yaml", "w") as f:
                 yaml.dump(calib_result, f)
 
     def run(self):
         for pose_id, pose in enumerate(self.ee_poses):
+            print("pose #", pose_id, ":")
+            print(pose)
             img, pose_actual = self.command_pose(pose["R"], pose["t"])
+            print(pose_actual)
             if img is not None:
                 T_b_e = pose2PoseMsg(pose_actual)
                 self.process_image(img, pose_id, T_b_e)
+        self.realsense.close()
         self.request_calibration()
         self.write_result()
 
     def run_pose_only(self):
         for pose_id, pose in enumerate(self.ee_poses):
-            print(pose_id)
+            print("pose #", pose_id, ":")
             print(pose)
             img, pose_actual = self.command_pose(pose["R"], pose["t"])
             if img is not None:
@@ -319,6 +347,8 @@ class HandEyeCalibrationNode:
 
 
 if __name__ == "__main__":
+    # rospy.init_node("handeye_calib_node")
+    """
     if len(sys.argv) < 7:
         print(
             "Usage: python3 handeye_calib_node checker_x checker_y checker_z "
@@ -332,11 +362,19 @@ if __name__ == "__main__":
     checker_row = int(sys.argv[4])
     checker_col = int(sys.argv[5])
     checker_size = float(sys.argv[6])
+    """
+    checker_x = 0.4
+    checker_y = 0.0
+    checker_z = 0.0
+    checker_row = 7
+    checker_col = 10
+    checker_size = 0.2
 
     cal_data = HandEyeCalibrationNode(
         (checker_x, checker_y, checker_z),
         (checker_row, checker_col),
         checker_size,
+        use_rs=True,
     )
     # quit()
-    cal_data.run_pose_only()
+    cal_data.run()
